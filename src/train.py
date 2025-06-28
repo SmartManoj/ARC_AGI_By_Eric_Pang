@@ -605,7 +605,7 @@ class Trainer:
             dataloader = make_task_gen_dataloader(
                 batch_size=self.batch_size,
                 log_every_n_steps=log_every_n_steps,
-                num_workers=num_workers,
+                num_workers=12, #num_workers,
                 task_generator_class=task_generator_class,
                 num_pairs=num_pairs,
                 num_devices=self.num_devices,
@@ -816,7 +816,6 @@ def run(cfg: omegaconf.DictConfig):
     lpn = LPN(encoder=encoder, decoder=decoder)
 
     wandb.init(
-        entity="TheThinker",
         project="ARC",
         settings=wandb.Settings(console="redirect"),
         config=omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
