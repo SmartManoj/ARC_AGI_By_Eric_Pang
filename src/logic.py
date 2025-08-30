@@ -1007,8 +1007,8 @@ async def run_tree(
     else:
         primitives = None
 
-    # To prevent rate limiting, we sleep for a random amount of time between 0 and 10 seconds
-    await asyncio.sleep(random.random() * 10)
+    # To prevent rate limiting, we sleep for a random amount of time between 0 and 20 seconds
+    await asyncio.sleep(random.random() * 20)
 
     all_attempts: list[Attempt] = []
     for root_attempt_config in tree:

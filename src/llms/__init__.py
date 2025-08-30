@@ -1,3 +1,4 @@
+import random
 import asyncio
 import base64
 import io
@@ -286,6 +287,15 @@ async def get_next_message_xai(
             start = time.time()
             logfire.debug(f"[{request_id}] calling {name}")
             print(f"[{request_id}] calling {name} with model {model.value}")
+
+            # To prevent rate limiting, we sleep for a random amount of time between 0 and 60 seconds
+            sleep_seconds = random.random() * 60
+            print(f"[{request_id}] sleeping for {sleep_seconds} seconds at time {time.time()}")
+            logfire.debug(f"[{request_id}] sleeping for {sleep_seconds} seconds at time {time.time()}")
+            await asyncio.sleep(sleep_seconds)
+            logfire.debug(f"[{request_id}] woke up at time {time.time()}")
+            print(f"[{request_id}] woke up at time {time.time()}")
+
             chat = xai_client.chat.create(model=model.value, max_tokens=120000)
 
             print(f"[{request_id}] chat successfully created")

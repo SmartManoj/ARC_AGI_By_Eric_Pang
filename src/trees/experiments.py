@@ -944,7 +944,7 @@ gpt_dreamcoder_tree: list[RootAttemptConfig] = [
 ]
 grok_dreamcoder_tree: list[RootAttemptConfig] = [
     RootAttemptConfig(
-        attempts=5,
+        attempts=10,
         llm_config=LLMConfig(
             model=Model.grok_4,
             temperature=0.95,
