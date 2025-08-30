@@ -288,8 +288,8 @@ async def get_next_message_xai(
             logfire.debug(f"[{request_id}] calling {name}")
             print(f"[{request_id}] calling {name} with model {model.value}")
 
-            # To prevent rate limiting, we sleep for a random amount of time between 0 and 60 seconds
-            sleep_seconds = random.random() * 60
+            # To prevent rate limiting, we sleep for a random amount of time between 0 and 5 minutes
+            sleep_seconds = random.random() * 60 * 5
             print(f"[{request_id}] sleeping for {sleep_seconds} seconds at time {time.time()}")
             logfire.debug(f"[{request_id}] sleeping for {sleep_seconds} seconds at time {time.time()}")
             await asyncio.sleep(sleep_seconds)
