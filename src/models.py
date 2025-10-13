@@ -27,6 +27,8 @@ GRID = list[list[int]]
 
 
 # random string
+import traceback
+
 def random_string(length: int = 8) -> str:
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
@@ -46,6 +48,7 @@ class Model(str, Enum):
     groq_llama_3_2_90b_vision = "llama-3.2-90b-vision-preview"
     # openrouter_claude_3_5_sonnet = "anthropic/claude-3.5-sonnet"
     openrouter_claude_3_5_sonnet = "anthropic/claude-3.5-sonnet:beta"
+    openrouter_model = os.environ["LLM_MODEL"]
     openrouter_o1 = "openai/o1-preview"
     openrouter_o1_mini = "openai/o1-mini-preview"
     # gemini_1_5_pro = "gemini-1.5-pro"
@@ -376,7 +379,9 @@ class Attempt(BaseModel):
 
     @staticmethod
     def cost_cents_from_usage(model: Model, usage: ModelUsage) -> float:
-        model_price = model_price_map[model]
+        model_price = model_price_map.get(model)
+        if not model_price:
+            return 0
         return (
             usage.cache_creation_input_tokens
             * model_price.cache_create_per_million_cents
@@ -472,6 +477,7 @@ class Attempt(BaseModel):
         from src.llms import get_next_messages
 
         try:
+            print(f"[{challenge.id}] calling LLM {attempt_config.llm_config.model.value} with {n_times} attempts...")
             next_messages = await get_next_messages(
                 messages=deepcopy(messages),
                 model=attempt_config.llm_config.model,
@@ -486,6 +492,7 @@ class Attempt(BaseModel):
                 f"[{challenge.id}] BIG PROBLEM***** Error getting next messages: {e}"
             )
             print(f"[{challenge.id}] BIG PROBLEM***** Error getting next messages: {e}")
+            traceback.print_exc()
             return []
         print(f"[{challenge.id}] llm responses: {next_messages}")
         logfire.debug(f"[{challenge.id}] llm responses: {next_messages}")

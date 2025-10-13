@@ -213,8 +213,8 @@ async def main() -> None:
         logfire.debug(f"[{challenge.id}] tuple 1: {first_solutions_and_accuracy}, tuple 2: {second_solutions_and_accuracy}")
         print(f"[{challenge.id}] tuple 1: {first_solutions_and_accuracy}, tuple 2: {second_solutions_and_accuracy}")
 
-        first_solutions, first_accuracy = first_solutions_and_accuracy
-        second_solutions, second_accuracy = second_solutions_and_accuracy
+        first_solutions, first_accuracy, first_code = first_solutions_and_accuracy
+        second_solutions, second_accuracy, second_code = second_solutions_and_accuracy
 
         logfire.debug(f"[{challenge.id}] first_solutions: {first_solutions}, first_accuracy: {first_accuracy}")
         logfire.debug(f"[{challenge.id}] second_solutions: {second_solutions}, second_accuracy: {second_accuracy}")

@@ -4,7 +4,7 @@ import typing as T
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 if not os.getenv("PRINT_LOGS") or os.environ["PRINT_LOGS"] == "0":
     PRINT_LOGS = False

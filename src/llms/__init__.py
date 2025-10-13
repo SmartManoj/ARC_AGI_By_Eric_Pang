@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import io
+import json
 import os
 import re
 import time
@@ -56,6 +57,7 @@ async def get_next_message_anthropic(
     temperature: float,
     retry_secs: int = 15,
     max_retries: int = 200,
+    stream: bool = False,
 ) -> tuple[str, ModelUsage] | None:
     retry_count = 0
     while True:
@@ -63,22 +65,51 @@ async def get_next_message_anthropic(
             request_id = random_string()
             start = time.time()
             logfire.debug(f"[{request_id}] calling anthropic")
-            message = await anthropic_client.beta.prompt_caching.messages.create(
-                system=system_messages,
-                temperature=temperature,
-                max_tokens=8_192,
-                messages=messages,
-                model=model.value,
-                extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
-                timeout=120,
-            )
-            took_ms = (time.time() - start) * 1000
-            usage = ModelUsage(
-                cache_creation_input_tokens=message.usage.cache_creation_input_tokens,
-                cache_read_input_tokens=message.usage.cache_read_input_tokens,
-                input_tokens=message.usage.input_tokens,
-                output_tokens=message.usage.output_tokens,
-            )
+            
+            if not stream:
+                message = await anthropic_client.beta.prompt_caching.messages.create(
+                    system=system_messages,
+                    temperature=temperature,
+                    max_tokens=8_192,
+                    messages=messages,
+                    model=model.value,
+                    extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
+                    timeout=120,
+                )
+                took_ms = (time.time() - start) * 1000
+                usage = ModelUsage(
+                    cache_creation_input_tokens=message.usage.cache_creation_input_tokens,
+                    cache_read_input_tokens=message.usage.cache_read_input_tokens,
+                    input_tokens=message.usage.input_tokens,
+                    output_tokens=message.usage.output_tokens,
+                )
+                final_content = message.content[-1].text
+            else:
+                final_content = ""
+                usage = None
+                async with anthropic_client.beta.prompt_caching.messages.stream(
+                    system=system_messages,
+                    temperature=temperature,
+                    max_tokens=8_192,
+                    messages=messages,
+                    model=model.value,
+                    extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
+                    timeout=120,
+                ) as stream_response:
+                    async for text in stream_response.text_stream:
+                        print(text, end="", flush=True)
+                        final_content += text
+                    
+                    final_message = await stream_response.get_final_message()
+                    usage = ModelUsage(
+                        cache_creation_input_tokens=final_message.usage.cache_creation_input_tokens,
+                        cache_read_input_tokens=final_message.usage.cache_read_input_tokens,
+                        input_tokens=final_message.usage.input_tokens,
+                        output_tokens=final_message.usage.output_tokens,
+                    )
+                print()  # newline after streaming
+                took_ms = (time.time() - start) * 1000
+            
             logfire.debug(
                 f"[{request_id}] got back anthropic, took {took_ms:.2f}, {usage}, cost_cents={Attempt.cost_cents_from_usage(model=model, usage=usage)}"
             )
@@ -103,7 +134,7 @@ async def get_next_message_anthropic(
                 # raise  # Re-raise the exception after max retries
                 return None
             await asyncio.sleep(retry_secs)
-    return message.content[-1].text, usage
+    return final_content, usage
 
 
 async def get_next_message_deepseek(
@@ -222,6 +253,7 @@ async def get_next_message_openai(
     retry_secs: int = 15,
     max_retries: int = 3,
     name: str = "openai",
+    stream: bool = False,
 ) -> tuple[str, ModelUsage] | None:
     retry_count = 0
     extra_params = {}
@@ -233,20 +265,50 @@ async def get_next_message_openai(
             start = time.time()
             logfire.debug(f"[{request_id}] calling openai")
             print(f"[{request_id}] calling openai with model {model.value}")
-            message = await openai_client.chat.completions.create(
-                **extra_params,
-                max_completion_tokens=16384,
-                messages=messages,
-                model=model.value,
-            )
+            
+            if not stream:
+                message = await openai_client.chat.completions.create(
+                    **extra_params,
+                    max_completion_tokens=16384,
+                    messages=messages,
+                    model=model.value,
+                )
+                cached_tokens = message.usage.prompt_tokens_details.cached_tokens
+                usage = ModelUsage(
+                    cache_creation_input_tokens=0,
+                    cache_read_input_tokens=cached_tokens,
+                    input_tokens=message.usage.prompt_tokens - cached_tokens,
+                    output_tokens=message.usage.completion_tokens,
+                )
+                final_content = message.choices[0].message.content
+            else:
+                response = await openai_client.chat.completions.create(
+                    **extra_params,
+                    max_completion_tokens=16384,
+                    messages=messages,
+                    model=model.value,
+                    stream=True,
+                    stream_options={"include_usage": True}
+                )
+                final_content = ""
+                usage = None
+                async for chunk in response:
+                    if len(chunk.choices):
+                        if chunk.choices[0].delta.content:
+                            print(chunk.choices[0].delta.content, end="", flush=True)
+                            final_content += chunk.choices[0].delta.content
+                    else:
+                        if chunk.usage:
+                            cached_tokens = chunk.usage.prompt_tokens_details.cached_tokens if chunk.usage.prompt_tokens_details else 0
+                            usage = ModelUsage(
+                                cache_creation_input_tokens=0,
+                                cache_read_input_tokens=cached_tokens,
+                                input_tokens=chunk.usage.prompt_tokens - cached_tokens,
+                                output_tokens=chunk.usage.completion_tokens,
+                            )
+                print()  # newline after streaming
+            
             took_ms = (time.time() - start) * 1000
-            cached_tokens = message.usage.prompt_tokens_details.cached_tokens
-            usage = ModelUsage(
-                cache_creation_input_tokens=0,
-                cache_read_input_tokens=cached_tokens,
-                input_tokens=message.usage.prompt_tokens - cached_tokens,
-                output_tokens=message.usage.completion_tokens,
-            )
             logfire.debug(
                 f"[{request_id}] got back {name}, took {took_ms:.2f}, {usage}, cost_cents={Attempt.cost_cents_from_usage(model=model, usage=usage)}"
             )
@@ -266,7 +328,7 @@ async def get_next_message_openai(
                 # raise  # Re-raise the exception after max retries
                 return None
             await asyncio.sleep(retry_secs)
-    return message.choices[0].message.content, usage
+    return final_content, usage
 
 async def get_next_message_xai(
     xai_client: AsyncClient,
@@ -276,6 +338,7 @@ async def get_next_message_xai(
     retry_secs: int = 15,
     max_retries: int = 0,
     name: str = "xai",
+    stream: bool = False,
 ) -> tuple[str, ModelUsage] | None:
     retry_count = 0
     extra_params = {}
@@ -286,7 +349,7 @@ async def get_next_message_xai(
             start = time.time()
             logfire.debug(f"[{request_id}] calling {name}")
             print(f"[{request_id}] calling {name} with model {model.value}")
-            chat = xai_client.chat.create(model=model.value, max_tokens=120000)
+            chat = xai_client.chat.create(model=model.value, max_tokens=120000, stream=stream)
 
             print(f"[{request_id}] chat successfully created")
             
@@ -311,23 +374,41 @@ async def get_next_message_xai(
 
             logfire.debug(f"[{request_id}] chat: {chat}")
             
-            message = await chat.sample()
+            if not stream:
+                message = await chat.sample()
+                final_content = message.content
+                print(f"[{request_id}] message: {final_content}")
+                logfire.debug(f"[{request_id}] message: {final_content}")
+                cached_tokens = message.usage.cached_prompt_text_tokens
+                usage = ModelUsage(
+                    cache_creation_input_tokens=0,
+                    cache_read_input_tokens=cached_tokens,
+                    input_tokens=message.usage.prompt_tokens - cached_tokens,
+                    output_tokens=message.usage.completion_tokens,
+                )
+            else:
+                final_content = ""
+                usage = None
+                async for chunk in chat.sample_streaming():
+                    if chunk.content:
+                        print(chunk.content, end="", flush=True)
+                        final_content += chunk.content
+                    if chunk.usage:
+                        cached_tokens = chunk.usage.cached_prompt_text_tokens
+                        usage = ModelUsage(
+                            cache_creation_input_tokens=0,
+                            cache_read_input_tokens=cached_tokens,
+                            input_tokens=chunk.usage.prompt_tokens - cached_tokens,
+                            output_tokens=chunk.usage.completion_tokens,
+                        )
+                print()  # newline after streaming
 
-            print(f"[{request_id}] message: {message.content}")
-            logfire.debug(f"[{request_id}] message: {message.content}")
             took_ms = (time.time() - start) * 1000
-            cached_tokens = message.usage.cached_prompt_text_tokens
-            usage = ModelUsage(
-                cache_creation_input_tokens=0,
-                cache_read_input_tokens=cached_tokens,
-                input_tokens=message.usage.prompt_tokens - cached_tokens,
-                output_tokens=message.usage.completion_tokens,
-            )
             logfire.debug(
-                f"[{request_id}] got back {name}, took {took_ms:.2f}, {usage}, reasoning tokens={message.usage.reasoning_tokens}, cost_cents={Attempt.cost_cents_from_usage(model=model, usage=usage)}"
+                f"[{request_id}] got back {name}, took {took_ms:.2f}, {usage}, cost_cents={Attempt.cost_cents_from_usage(model=model, usage=usage)}"
             )
             print(
-                f"[{request_id}] got back {name}, took {took_ms:.2f}, {usage}, reasoning tokens={message.usage.reasoning_tokens}, cost_cents={Attempt.cost_cents_from_usage(model=model, usage=usage)}"
+                f"[{request_id}] got back {name}, took {took_ms:.2f}, {usage}, cost_cents={Attempt.cost_cents_from_usage(model=model, usage=usage)}"
             )
             break  # Success, exit the loop
         except Exception as e:
@@ -342,7 +423,7 @@ async def get_next_message_xai(
                 # raise  # Re-raise the exception after max retries
                 return None
             await asyncio.sleep(retry_secs)
-    return message.content, usage
+    return final_content, usage
 
 async def get_next_message_gemini(
     cache: gemini_caching.CachedContent,
@@ -405,6 +486,10 @@ async def get_next_messages(
 ) -> list[tuple[str, ModelUsage]] | None:
     if n_times <= 0:
         return []
+    
+    # Check if streaming is enabled via environment variable
+    stream_enabled = os.environ.get("STREAM_LLM", "0") == "1" and n_times == 1
+    
     if model in [Model.claude_3_5_sonnet, Model.claude_3_5_haiku]:
         if model == Model.claude_3_5_haiku:
             messages = text_only_messages(messages)
@@ -448,6 +533,7 @@ async def get_next_messages(
                 messages=messages,
                 model=model,
                 temperature=temperature,
+                stream=stream_enabled,
             ),
             *await asyncio.gather(
                 *[
@@ -457,6 +543,7 @@ async def get_next_messages(
                         messages=messages,
                         model=model,
                         temperature=temperature,
+                        stream=False,
                     )
                     for _ in range(n_times - 1)
                 ]
@@ -488,6 +575,7 @@ async def get_next_messages(
                 messages=messages,
                 model=model,
                 temperature=temperature,
+                stream=stream_enabled,
             ),
             *await asyncio.gather(
                 *[
@@ -496,6 +584,7 @@ async def get_next_messages(
                         messages=messages,
                         model=model,
                         temperature=temperature,
+                        stream=False,
                     )
                     for _ in range(n_times - 1)
                 ]
@@ -565,17 +654,29 @@ async def get_next_messages(
 
         print("Created xai client")
 
-        n_messages = await asyncio.gather(
-            *[
-                get_next_message_xai(
+        if stream_enabled:
+            n_messages = [
+                await get_next_message_xai(
                     xai_client=xai_client,
                     messages=messages,
                     model=model,
                     temperature=temperature,
+                    stream=True,
                 )
-                for _ in range(n_times)
             ]
-        )
+        else:
+            n_messages = await asyncio.gather(
+                *[
+                    get_next_message_xai(
+                        xai_client=xai_client,
+                        messages=messages,
+                        model=model,
+                        temperature=temperature,
+                        stream=False,
+                    )
+                    for _ in range(n_times)
+                ]
+            )
         return [m for m in n_messages if m]
     elif model in [Model.gemini_1_5_pro]:
         if messages[0]["role"] == "system":
@@ -632,6 +733,56 @@ async def get_next_messages(
             ),
         ]
         # filter out the Nones
+        return [m for m in n_messages if m]
+    elif model in [Model.openrouter_claude_3_5_sonnet, Model.openrouter_model, Model.openrouter_o1, Model.openrouter_o1_mini]:
+        openrouter_client = AsyncOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=os.environ["OPENROUTER_API_KEY"],
+        )
+        if model in [Model.openrouter_model, Model.openrouter_o1, Model.openrouter_o1_mini]:
+            messages = text_only_messages(messages)
+        
+        async def get_message_with_retry(messages, model, temperature, max_retries=5):
+            """Wrapper to retry get_next_message with exponential backoff"""
+            print(f"Starting API call to {model.value}...")
+            for retry in range(max_retries):
+                try:
+                    result = await get_next_message(
+                        messages=messages,
+                        model=model,
+                        temperature=temperature,
+                    )
+                    print(f"✓ Received response from {model.value}")
+                    return result
+                except Exception as e:
+                    error_str = str(e).lower()
+                    # Retry on rate limits (429), upstream errors (502), or empty choices
+                    should_retry = (
+                        "429" in str(e) or 
+                        "rate" in error_str or 
+                        "502" in str(e) or 
+                        "upstream" in error_str or
+                        "no choices" in error_str
+                    )
+                    if should_retry:
+                        wait_time = 2 ** retry * 10  # 10, 20, 40, 80, 160 seconds
+                        print(f"API error (retry {retry+1}/{max_retries}), waiting {wait_time}s: {str(e)[:100]}...")
+                        logfire.debug(f"API error: {e}, retrying in {wait_time}s")
+                        if retry < max_retries - 1:
+                            await asyncio.sleep(wait_time)
+                        else:
+                            raise
+                    else:
+                        print(f"Non-retryable error: {e}")
+                        raise
+            return None
+        
+        n_messages = await asyncio.gather(
+            *[
+                get_message_with_retry(messages, model, temperature)
+                for _ in range(n_times)
+            ]
+        )
         return [m for m in n_messages if m]
     else:
         raise ValueError(f"Invalid model: {model}")
@@ -776,9 +927,9 @@ async def get_next_message(
             input_tokens=message.usage.prompt_tokens - cached_tokens,
             output_tokens=message.usage.completion_tokens,
         )
-    elif model == Model.openrouter_o1:
+    elif model == Model.openrouter_model:
         openrouter_client = AsyncOpenAI(
-            base_url="https://openrouter.ai/api/v1",
+            base_url=os.environ["LLM_BASE_URL"],
             api_key=os.environ["OPENROUTER_API_KEY"],
         )
         message = await openrouter_client.chat.completions.create(
@@ -787,7 +938,13 @@ async def get_next_message(
             temperature=temperature,
             max_tokens=20_000,
         )
-        if message.usage.prompt_tokens_details:
+        if not message.choices or len(message.choices) == 0:
+            # log messages to file
+            with open("messages.json", "w") as f:
+                f.write(json.dumps(messages, indent=4))
+            print(f"OpenRouter API error - no choices returned. Full response: {message};")
+            raise ValueError(f"OpenRouter API returned no choices. Check API key, rate limits, or model availability.")
+        if message.usage and message.usage.prompt_tokens_details:
             cached_tokens = message.usage.prompt_tokens_details.cached_tokens
         else:
             cached_tokens = 0
