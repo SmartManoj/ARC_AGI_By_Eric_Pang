@@ -938,8 +938,8 @@ async def get_next_message(
         )
     elif model == Model.openrouter_model:
         openrouter_client = AsyncOpenAI(
-            base_url=os.environ["LLM_BASE_URL"],
-            api_key=os.environ["OPENROUTER_API_KEY"],
+            base_url=os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1"),
+            api_key=os.environ.get("OPENROUTER_API_KEY", "dummy"),
         )
         
         # Check if streaming is enabled via environment variable
