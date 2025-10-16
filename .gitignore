@@ -15,3 +15,4 @@ wheels/
 logs.txt
 test_data/tmp_solutions*
 test_data/training_solutions*
+stream_outputs/

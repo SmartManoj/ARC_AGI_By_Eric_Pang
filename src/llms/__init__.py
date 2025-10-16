@@ -742,17 +742,26 @@ async def get_next_messages(
         if model in [Model.openrouter_model, Model.openrouter_o1, Model.openrouter_o1_mini]:
             messages = text_only_messages(messages)
         
+        attempt_counter = {"count": 0}
+        attempt_lock = asyncio.Lock()
+        
         async def get_message_with_retry(messages, model, temperature, max_retries=5):
             """Wrapper to retry get_next_message with exponential backoff"""
-            print(f"Starting API call to {model.value}...")
+            # Get unique attempt number
+            async with attempt_lock:
+                attempt_counter["count"] += 1
+                attempt_num = attempt_counter["count"]
+            
+            print(f"[Attempt {attempt_num}] Starting API call to {model.value}...")
             for retry in range(max_retries):
                 try:
                     result = await get_next_message(
                         messages=messages,
                         model=model,
                         temperature=temperature,
+                        attempt_num=attempt_num,
                     )
-                    print(f"✓ Received response from {model.value}")
+                    print(f"[Attempt {attempt_num}] ✓ Received response from {model.value}")
                     return result
                 except Exception as e:
                     error_str = str(e).lower()
@@ -789,7 +798,7 @@ async def get_next_messages(
 
 
 async def get_next_message(
-    *, messages: list[dict[str, T.Any]], model: Model, temperature: float
+    *, messages: list[dict[str, T.Any]], model: Model, temperature: float, attempt_num: int = 0
 ) -> tuple[str, ModelUsage]:
     if int(os.environ.get("NO_WIFI", 0)) == 1:
         return "[[1, 2, 3], [4, 5, 6]]", ModelUsage(
@@ -932,28 +941,82 @@ async def get_next_message(
             base_url=os.environ["LLM_BASE_URL"],
             api_key=os.environ["OPENROUTER_API_KEY"],
         )
-        message = await openrouter_client.chat.completions.create(
-            model=model.value,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=20_000,
-        )
-        if not message.choices or len(message.choices) == 0:
-            # log messages to file
-            with open("messages.json", "w") as f:
-                f.write(json.dumps(messages, indent=4))
-            print(f"OpenRouter API error - no choices returned. Full response: {message};")
-            raise ValueError(f"OpenRouter API returned no choices. Check API key, rate limits, or model availability.")
-        if message.usage and message.usage.prompt_tokens_details:
-            cached_tokens = message.usage.prompt_tokens_details.cached_tokens
+        
+        # Check if streaming is enabled via environment variable
+        stream_enabled = os.environ.get("STREAM_LLM", "0") == "1"
+        
+        if not stream_enabled:
+            message = await openrouter_client.chat.completions.create(
+                model=model.value,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=20_000,
+            )
+            if not message.choices or len(message.choices) == 0:
+                # log messages to file
+                with open("messages.json", "w") as f:
+                    f.write(json.dumps(messages, indent=4))
+                print(f"OpenRouter API error - no choices returned. Full response: {message};")
+                raise ValueError(f"OpenRouter API returned no choices. Check API key, rate limits, or model availability.")
+            if message.usage and message.usage.prompt_tokens_details:
+                cached_tokens = message.usage.prompt_tokens_details.cached_tokens
+            else:
+                cached_tokens = 0
+            final_content = message.choices[0].message.content
+            usage = ModelUsage(
+                cache_creation_input_tokens=0,
+                cache_read_input_tokens=cached_tokens,
+                input_tokens=message.usage.prompt_tokens - cached_tokens,
+                output_tokens=message.usage.completion_tokens,
+            )
         else:
-            cached_tokens = 0
-        return message.choices[0].message.content, ModelUsage(
-            cache_creation_input_tokens=0,
-            cache_read_input_tokens=cached_tokens,
-            input_tokens=message.usage.prompt_tokens - cached_tokens,
-            output_tokens=message.usage.completion_tokens,
-        )
+            # Create a unique file for this streaming attempt
+            from pathlib import Path
+            stream_dir = Path("stream_outputs")
+            stream_dir.mkdir(exist_ok=True)
+            stream_file = stream_dir / f"attempt_{attempt_num}_{random_string(4)}.txt"
+            
+            response = await openrouter_client.chat.completions.create(
+                model=model.value,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=20_000,
+                stream=True,
+                stream_options={"include_usage": True}
+            )
+            final_content = ""
+            usage = None
+            
+            print(f"[Attempt {attempt_num}] Streaming to {stream_file}")
+            
+            with open(stream_file, "w", encoding="utf-8") as f:
+                async for chunk in response:
+                    if len(chunk.choices) > 0:
+                        if chunk.choices[0].delta.content:
+                            content_chunk = chunk.choices[0].delta.content
+                            f.write(content_chunk)
+                            f.flush()
+                            final_content += content_chunk
+                    else:
+                        if chunk.usage:
+                            if chunk.usage.prompt_tokens_details:
+                                cached_tokens = chunk.usage.prompt_tokens_details.cached_tokens
+                            else:
+                                cached_tokens = 0
+                            usage = ModelUsage(
+                                cache_creation_input_tokens=0,
+                                cache_read_input_tokens=cached_tokens,
+                                input_tokens=chunk.usage.prompt_tokens - cached_tokens,
+                                output_tokens=chunk.usage.completion_tokens,
+                            )
+            
+            print(f"[Attempt {attempt_num}] Streaming complete, saved to {stream_file}")
+            
+            if not final_content:
+                print(f"[Attempt {attempt_num}] OpenRouter API error - no content received")
+                raise ValueError(f"OpenRouter API returned no content. Check API key, rate limits, or model availability.")
+        
+        return final_content, usage
     elif model == Model.openrouter_o1_mini:
         openrouter_client = AsyncOpenAI(
             base_url="https://openrouter.ai/api/v1",
