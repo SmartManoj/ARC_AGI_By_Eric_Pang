@@ -951,6 +951,7 @@ async def get_next_message(
                 messages=messages,
                 temperature=temperature,
                 max_tokens=20_000,
+                seed=42,
             )
             if not message.choices or len(message.choices) == 0:
                 # log messages to file
