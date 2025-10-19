@@ -14,8 +14,6 @@ from anthropic import AsyncAnthropic, RateLimitError
 from devtools import debug
 from google.generativeai import caching as gemini_caching
 from openai import AsyncAzureOpenAI, AsyncOpenAI
-from xai_sdk import AsyncClient
-from xai_sdk.chat import user, assistant, system, image
 
 from src import logfire
 from src.logic import random_string
@@ -330,101 +328,6 @@ async def get_next_message_openai(
             await asyncio.sleep(retry_secs)
     return final_content, usage
 
-async def get_next_message_xai(
-    xai_client: AsyncClient,
-    messages: list[dict[str, T.Any]],
-    model: Model,
-    temperature: float,
-    retry_secs: int = 15,
-    max_retries: int = 0,
-    name: str = "xai",
-    stream: bool = False,
-) -> tuple[str, ModelUsage] | None:
-    retry_count = 0
-    extra_params = {}
-    extra_params["temperature"] = temperature
-    while True:
-        try:
-            request_id = random_string()
-            start = time.time()
-            logfire.debug(f"[{request_id}] calling {name}")
-            print(f"[{request_id}] calling {name} with model {model.value}")
-            chat = xai_client.chat.create(model=model.value, max_tokens=120000, stream=stream)
-
-            print(f"[{request_id}] chat successfully created")
-            
-            # Convert messages to XAI format
-            for msg in messages:
-                if msg["role"] == "system":
-                    role = system
-                elif msg["role"] == "user":
-                    role = user
-                elif msg["role"] == "assistant":
-                    role = assistant
-                else:
-                    raise ValueError(f"Invalid role: {msg['role']}")
-
-                for content in msg["content"]:
-                    if content["type"] == "text":
-                        chat.append(role(content["text"]))
-                    elif content["type"] == "image_url":
-                        chat.append(role(image(content["image_url"]["url"])))
-                    else:
-                        raise ValueError(f"Invalid content type: {content['type']}")
-
-            logfire.debug(f"[{request_id}] chat: {chat}")
-            
-            if not stream:
-                message = await chat.sample()
-                final_content = message.content
-                print(f"[{request_id}] message: {final_content}")
-                logfire.debug(f"[{request_id}] message: {final_content}")
-                cached_tokens = message.usage.cached_prompt_text_tokens
-                usage = ModelUsage(
-                    cache_creation_input_tokens=0,
-                    cache_read_input_tokens=cached_tokens,
-                    input_tokens=message.usage.prompt_tokens - cached_tokens,
-                    output_tokens=message.usage.completion_tokens,
-                )
-            else:
-                final_content = ""
-                usage = None
-                async for chunk in chat.sample_streaming():
-                    if chunk.content:
-                        print(chunk.content, end="", flush=True)
-                        final_content += chunk.content
-                    if chunk.usage:
-                        cached_tokens = chunk.usage.cached_prompt_text_tokens
-                        usage = ModelUsage(
-                            cache_creation_input_tokens=0,
-                            cache_read_input_tokens=cached_tokens,
-                            input_tokens=chunk.usage.prompt_tokens - cached_tokens,
-                            output_tokens=chunk.usage.completion_tokens,
-                        )
-                print()  # newline after streaming
-
-            took_ms = (time.time() - start) * 1000
-            logfire.debug(
-                f"[{request_id}] got back {name}, took {took_ms:.2f}, {usage}, cost_cents={Attempt.cost_cents_from_usage(model=model, usage=usage)}"
-            )
-            print(
-                f"[{request_id}] got back {name}, took {took_ms:.2f}, {usage}, cost_cents={Attempt.cost_cents_from_usage(model=model, usage=usage)}"
-            )
-            break  # Success, exit the loop
-        except Exception as e:
-            logfire.debug(
-                f"Other {name} error: {str(e)}, retrying in {retry_count} seconds ({retry_count}/{max_retries})..."
-            )
-            print(
-                f"Other {name} error: {str(e)}, retrying in {retry_count} seconds ({retry_count}/{max_retries})..."
-            )
-            retry_count += 1
-            if retry_count >= max_retries:
-                # raise  # Re-raise the exception after max retries
-                return None
-            await asyncio.sleep(retry_secs)
-    return final_content, usage
-
 async def get_next_message_gemini(
     cache: gemini_caching.CachedContent,
     model: Model,
@@ -646,37 +549,6 @@ async def get_next_messages(
         else:
             raise ValueError(f"Invalid model: {model}")
         # filter out the Nones
-    elif model in [Model.grok_3, Model.grok_4]:
-        xai_client = AsyncClient(
-            api_key=os.environ["XAI_API_KEY"],
-            timeout=3600, # 3600 seconds = 60 minutes
-        )
-
-        print("Created xai client")
-
-        if stream_enabled:
-            n_messages = [
-                await get_next_message_xai(
-                    xai_client=xai_client,
-                    messages=messages,
-                    model=model,
-                    temperature=temperature,
-                    stream=True,
-                )
-            ]
-        else:
-            n_messages = await asyncio.gather(
-                *[
-                    get_next_message_xai(
-                        xai_client=xai_client,
-                        messages=messages,
-                        model=model,
-                        temperature=temperature,
-                        stream=False,
-                    )
-                    for _ in range(n_times)
-                ]
-            )
         return [m for m in n_messages if m]
     elif model in [Model.gemini_1_5_pro]:
         if messages[0]["role"] == "system":

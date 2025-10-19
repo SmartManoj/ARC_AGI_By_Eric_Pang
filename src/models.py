@@ -55,8 +55,6 @@ class Model(str, Enum):
     gemini_1_5_pro = "gemini-1.5-pro-002"
     deep_seek_r1 = "deepseek-reasoner"
     baseten_deepseek_r1 = "baseten_deepseek_r1"
-    grok_4 = "grok-4-0709"
-    grok_3 = "grok-3"
 
 
 class ModelPrice(BaseModel):
@@ -150,18 +148,6 @@ model_price_map: dict[Model, ModelPrice] = {
         cache_read_per_million_cents=55,
         input_tokens_per_million_cents=110,
         output_tokens_per_million_cents=440,
-    ),
-    Model.grok_3: ModelPrice(
-        cache_create_per_million_cents=1500,
-        cache_read_per_million_cents=75,
-        input_tokens_per_million_cents=300,
-        output_tokens_per_million_cents=1500,
-    ),
-    Model.grok_4: ModelPrice(
-        cache_create_per_million_cents=1500,
-        cache_read_per_million_cents=75,
-        input_tokens_per_million_cents=300,
-        output_tokens_per_million_cents=1500,
     ),
 }
 

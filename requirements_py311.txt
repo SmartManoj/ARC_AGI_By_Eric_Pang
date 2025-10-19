@@ -113,4 +113,3 @@ scikit-learn==1.5.1
 seaborn==0.13.2
 networkx==3.3
 torch==2.4.1
-xai-sdk==1.1.0
