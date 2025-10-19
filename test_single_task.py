@@ -158,3 +158,5 @@ if __name__ == "__main__":
     
     asyncio.run(test_single_task(task_id, enable_streaming))
 
+    from pymsgbox import alert
+    alert("ARC Task completed")
