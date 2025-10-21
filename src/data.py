@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 from pydantic import TypeAdapter
@@ -35,6 +36,8 @@ def build_challenges(
         for i, val in enumerate(v["test"]):
             val["output"] = solutions_d[k][i]
         v["id"] = k
+        if int(os.environ.get("TOTAL_TASKS", "500")) == k:
+            break
     return ChallengeAdapter.validate_python(challenges_j)
 
 def build_challenges_v2(
